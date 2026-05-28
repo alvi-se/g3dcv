@@ -36,17 +36,43 @@ def sort_points(points):
     return np.array([d1[0], d2[0], d1[-1], d2[-1]])
 
 
+def find_rectangles(contours, hierarchy):
+    rectangular_contours = []
+
+    # for i, c in zip(np.arange(len(contours)), contours):
+    for c in contours:
+        c1 = cv2.approxPolyDP(c, 15, True)
+        # Keep only contours with 4 vertices
+        if len(c1) == 4:
+            c1 = sort_points(c1)
+            # solvePnP requires float32 so we convert it here,
+            # to make code more readable in the next lines
+            c1 = c1.astype(np.float32)
+            rectangular_contours.append(c1)
+
+    # TODO: use hierarchy for more robust filtering and detection
+    # This is really bad because it assumes the position of the rectangles
+    # in the array. By using hierarchy it would be better: search
+    # for the rectangles that have another rectangle inside
+    r1 = np.concatenate([rectangular_contours[0], rectangular_contours[2]])
+    r2 = np.concatenate([rectangular_contours[1], rectangular_contours[3]])
+
+    return [r1, r2]
+
+
 def main():
     cap = cv2.VideoCapture("./LaserScanner_project_data/data/puppet.mp4")
     
-    k = np.loadtxt("./LaserScanner_project_data/calibration/K.txt")
+    K = np.loadtxt("./LaserScanner_project_data/calibration/K.txt")
     dist = np.loadtxt("./LaserScanner_project_data/calibration/dist.txt")
 
     while cap.isOpened():
         ret, frame = cap.read()
+        if not ret:
+            return
 
         # Compensate camera distortion
-        frame = cv2.undistort(frame, k, dist)
+        frame = cv2.undistort(frame, K, dist)
 
         grayscale = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         
@@ -60,29 +86,54 @@ def main():
             thresholded, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_SIMPLE
         )
 
-        rectangular_contours = []
-
-        # for i, c in zip(np.arange(len(contours)), contours):
-        for c in contours:
-            c1 = cv2.approxPolyDP(c, 15, True)
-            # Keep only contours with 4 vertices
-            if len(c1) == 4:
-                c1 = sort_points(c1)
-                rectangular_contours.append(c1)
+        rectangles = find_rectangles(contours, hierarchy)
+        print(rectangles[0])
 
         
-        img = cv2.drawContours(frame, [rectangular_contours[0], rectangular_contours[1]], -1, (0, 255, 75), 2)
-        img = cv2.drawContours(img, [rectangular_contours[2], rectangular_contours[3]], -1, (0, 0, 255), 2)
+        # FIXME currently broken, don't know why
+        # Green color for the first rectangle
+        # cv2.drawContours(frame, rectangles, -1, (0, 255, 0), 2)
+        # Red color for the second rectangle
+        # cv2.drawContours(frame, rectangles[1], -1, (0, 0, 255), 2)
         
-        a = cv2.solvePnP(
+        r1_succ, r1_rvec, r1_tvec = cv2.solvePnP(
                 np.array(RECT).astype(np.float32),
-                np.concatenate([
-                    rectangular_contours[0].astype(np.float32),
-                    rectangular_contours[1].astype(np.float32)
-                    ]),
-                k, None)
+                rectangles[0],
+                # None is the camera distortion: we have already fixed it
+                # previously
+                K, None)
 
-        cv2.imshow("frame", img)
+        r2_succ, r2_rvec, r2_tvec= cv2.solvePnP(
+                np.array(RECT).astype(np.float32),
+                rectangles[1],
+                K, None)
+
+        # Sanity check: reproject points back to the image
+        r1_reprojection, _ = cv2.projectPoints(
+            np.array(RECT, dtype=np.float32), 
+            r1_rvec, 
+            r1_tvec, 
+            K, 
+            np.zeros((4, 1), dtype=np.float32)
+        )
+
+        r2_reprojection, _ = cv2.projectPoints(
+            np.array(RECT, dtype=np.float32), 
+            r2_rvec, 
+            r2_tvec, 
+            K, 
+            np.zeros((4, 1), dtype=np.float32)
+        )
+
+        for p in np.concatenate([r1_reprojection, r2_reprojection]):
+            px, py = int(p[0][0]), int(p[0][1])
+            cv2.circle(frame, (px, py), 5, (255, 0, 0), -1)
+
+
+        r1_rmat = cv2.Rodrigues(r1_rvec)
+        r2_rmat = cv2.Rodrigues(r2_rvec)
+
+        cv2.imshow("frame", frame)
         if cv2.waitKey(1) & 0xFF == ord("q"):
             break
 
