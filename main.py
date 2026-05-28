@@ -87,7 +87,6 @@ def main():
         )
 
         rectangles = find_rectangles(contours, hierarchy)
-        print(rectangles[0])
 
         
         # FIXME currently broken, don't know why
@@ -130,8 +129,13 @@ def main():
             cv2.circle(frame, (px, py), 5, (255, 0, 0), -1)
 
 
-        r1_rmat = cv2.Rodrigues(r1_rvec)
-        r2_rmat = cv2.Rodrigues(r2_rvec)
+        r1_rmat, _ = cv2.Rodrigues(r1_rvec)
+        r2_rmat, _ = cv2.Rodrigues(r2_rvec)
+
+
+        r1_normal =  r1_rmat @ np.array([0, 0, 1])
+        r2_normal =  r2_rmat @ np.array([0, 0, 1])
+
 
         cv2.imshow("frame", frame)
         if cv2.waitKey(1) & 0xFF == ord("q"):
