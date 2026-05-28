@@ -7,16 +7,16 @@ Course: Geometric and 3D Computer Vision
 import cv2
 import numpy as np
 
-INNER_RECT = [[1, 1, 0],
-              [1, 14, 0],
-              [24, 14, 0],
-              [24, 0, 0]
+INNER_RECT = [[0.01, 0.01, 0.],
+              [0.01, 0.14, 0.],
+              [0.24, 0.14, 0.],
+              [0.24, 0.01, 0.]
               ]
 
-OUTER_RECT = [[0, 0, 0],
-              [0, 15, 0],
-              [25, 15, 0],
-              [25, 0, 0]
+OUTER_RECT = [[0., 0., 0.],
+              [0, 0.15, 0.],
+              [0.25, 0.15, 0.],
+              [0.25, 0., 0.]
               ]
 
 RECT = INNER_RECT + OUTER_RECT
