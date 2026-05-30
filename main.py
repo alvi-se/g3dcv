@@ -4,6 +4,8 @@ Academic Year: 2025/2026
 Course: Geometric and 3D Computer Vision
 """
 
+from collections.abc import Sequence
+from dataclasses import dataclass
 import cv2
 import numpy as np
 
@@ -22,6 +24,18 @@ OUTER_RECT = [[0., 0., 0.],
 RECT = INNER_RECT + OUTER_RECT
 
 
+K = np.loadtxt("./LaserScanner_project_data/calibration/K.txt")
+DIST = np.loadtxt("./LaserScanner_project_data/calibration/dist.txt")
+
+
+@dataclass
+class Plane3D:
+    tvec: cv2.typing.MatLike
+    rvec: cv2.typing.MatLike
+    normal: np.typing.ArrayLike
+
+
+
 def sort_points(points):
     if len(points) != 4:
         raise Exception("Can only sort quadrilaterals")
@@ -36,7 +50,7 @@ def sort_points(points):
     return np.array([d1[0], d2[0], d1[-1], d2[-1]])
 
 
-def find_rectangles(contours, hierarchy):
+def find_rectangles(contours: Sequence[cv2.typing.MatLike], hierarchy):
     rectangular_contours = []
 
     # for i, c in zip(np.arange(len(contours)), contours):
@@ -60,11 +74,57 @@ def find_rectangles(contours, hierarchy):
     return [r1, r2]
 
 
+def extract_base_planes(frame: cv2.typing.MatLike) -> tuple[Plane3D, Plane3D]:
+    grayscale = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+
+    # Experimented a bit with the threshold and epsilon for approximation
+    _, thresholded = cv2.threshold(grayscale, 20, 255, cv2.THRESH_BINARY)
+    # thresholded = cv2.adaptiveThreshold(grayscale, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 51, 15)
+
+    # Find contours
+    contours, hierarchy = cv2.findContours(
+        # thresholded, cv2.CHAIN_APPROX_SIMPLE, cv2.RETR_CCOMP
+        thresholded, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_SIMPLE
+    )
+
+    rectangles = find_rectangles(contours, hierarchy)
+
+
+    # FIXME currently broken, don't know why
+    # Green color for the first rectangle
+    # cv2.drawContours(frame, rectangles, -1, (0, 255, 0), 2)
+    # Red color for the second rectangle
+    # cv2.drawContours(frame, rectangles[1], -1, (0, 0, 255), 2)
+
+    r1_succ, r1_rvec, r1_tvec = cv2.solvePnP(
+            np.array(RECT).astype(np.float32),
+            rectangles[0],
+            # None is the camera distortion: we have already fixed it
+            # previously
+            K, None)
+
+    r2_succ, r2_rvec, r2_tvec = cv2.solvePnP(
+            np.array(RECT).astype(np.float32),
+            rectangles[1],
+            K, None)
+
+
+    r1_rmat, _ = cv2.Rodrigues(r1_rvec)
+    r2_rmat, _ = cv2.Rodrigues(r2_rvec)
+
+
+    r1_normal =  r1_rmat @ np.array([0, 0, 1])
+    r2_normal =  r2_rmat @ np.array([0, 0, 1])
+
+    return (
+            Plane3D(r1_tvec, r1_rvec, r1_normal),
+            Plane3D(r2_tvec, r2_rvec, r2_normal)
+            )
+
+
 def main():
     cap = cv2.VideoCapture("./LaserScanner_project_data/data/puppet.mp4")
     
-    K = np.loadtxt("./LaserScanner_project_data/calibration/K.txt")
-    dist = np.loadtxt("./LaserScanner_project_data/calibration/dist.txt")
 
     while cap.isOpened():
         ret, frame = cap.read()
@@ -72,54 +132,24 @@ def main():
             return
 
         # Compensate camera distortion
-        frame = cv2.undistort(frame, K, dist)
+        frame = cv2.undistort(frame, K, DIST)
 
-        grayscale = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        
-        # Experimented a bit with the threshold and epsilon for approximation
-        _, thresholded = cv2.threshold(grayscale, 20, 255, cv2.THRESH_BINARY)
-        # thresholded = cv2.adaptiveThreshold(grayscale, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 51, 15)
+        r1, r2 = extract_base_planes(frame)
 
-        # Find contours
-        contours, hierarchy = cv2.findContours(
-            # thresholded, cv2.CHAIN_APPROX_SIMPLE, cv2.RETR_CCOMP
-            thresholded, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_SIMPLE
-        )
-
-        rectangles = find_rectangles(contours, hierarchy)
-
-        
-        # FIXME currently broken, don't know why
-        # Green color for the first rectangle
-        # cv2.drawContours(frame, rectangles, -1, (0, 255, 0), 2)
-        # Red color for the second rectangle
-        # cv2.drawContours(frame, rectangles[1], -1, (0, 0, 255), 2)
-        
-        r1_succ, r1_rvec, r1_tvec = cv2.solvePnP(
-                np.array(RECT).astype(np.float32),
-                rectangles[0],
-                # None is the camera distortion: we have already fixed it
-                # previously
-                K, None)
-
-        r2_succ, r2_rvec, r2_tvec= cv2.solvePnP(
-                np.array(RECT).astype(np.float32),
-                rectangles[1],
-                K, None)
 
         # Sanity check: reproject points back to the image
         r1_reprojection, _ = cv2.projectPoints(
             np.array(RECT, dtype=np.float32), 
-            r1_rvec, 
-            r1_tvec, 
+            r1.rvec,
+            r1.tvec,
             K, 
             np.zeros((4, 1), dtype=np.float32)
         )
 
         r2_reprojection, _ = cv2.projectPoints(
             np.array(RECT, dtype=np.float32), 
-            r2_rvec, 
-            r2_tvec, 
+            r2.rvec,
+            r2.tvec,
             K, 
             np.zeros((4, 1), dtype=np.float32)
         )
@@ -128,13 +158,6 @@ def main():
             px, py = int(p[0][0]), int(p[0][1])
             cv2.circle(frame, (px, py), 5, (255, 0, 0), -1)
 
-
-        r1_rmat, _ = cv2.Rodrigues(r1_rvec)
-        r2_rmat, _ = cv2.Rodrigues(r2_rvec)
-
-
-        r1_normal =  r1_rmat @ np.array([0, 0, 1])
-        r2_normal =  r2_rmat @ np.array([0, 0, 1])
 
 
         cv2.imshow("frame", frame)
