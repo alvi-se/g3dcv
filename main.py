@@ -74,6 +74,15 @@ def find_rectangles(contours: Sequence[cv2.typing.MatLike], hierarchy):
     return [r1, r2]
 
 
+def fit_plane(points: np.typing.ArrayLike) -> Plane3D:
+    mean = np.mean(points)
+    print(points)
+    y = points - mean
+    print(y)
+    cov_mat = sum([col @ col.translate() for col in y])
+    print(cov_mat)
+
+
 def extract_base_planes(frame: cv2.typing.MatLike) -> tuple[Plane3D, Plane3D]:
     grayscale = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
@@ -159,6 +168,26 @@ def main():
             cv2.circle(frame, (px, py), 5, (255, 0, 0), -1)
 
 
+        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+        # Lost 30 minutes here because I didn't know OpenCV used
+        # HSV with H in [0, 179] and not [0, 360]...
+        red_lower = np.array([160, 30, 128])
+        red_upper = np.array([180, 255, 255])
+        laser_mask = cv2.inRange(hsv, red_lower, red_upper)
+        # This gives points (y, x) instead of (x, y)
+        laser_y, laser_x = np.where(laser_mask > 0)
+
+        for px, py in zip(laser_x, laser_y):
+            # I don't know what would happen if I used all 4 vertices
+            # (both inner and outer rectangle) and I don't want to discover
+            # So I'm just limiting it to the inner square
+            # (first 4 points, r1_reprojection[:4])
+            if cv2.pointPolygonTest(r1_reprojection[:4], (px.item(), py.item()), False) == 1:
+                cv2.circle(frame, (px, py), 2, (0, 0, 255), -1)
+            elif cv2.pointPolygonTest(r2_reprojection[:4], (px.item(), py.item()), False) == 1:
+                cv2.circle(frame, (px, py), 2, (0, 0, 255), -1)
+            else:
+                cv2.circle(frame, (px, py), 2, (0, 0, 160), -1)
 
         cv2.imshow("frame", frame)
         if cv2.waitKey(1) & 0xFF == ord("q"):
