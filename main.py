@@ -31,7 +31,7 @@ DIST = np.loadtxt("./LaserScanner_project_data/calibration/dist.txt")
 @dataclass
 class Plane3D:
     tvec: cv2.typing.MatLike
-    rvec: cv2.typing.MatLike
+    rmat: cv2.typing.MatLike
     normal: cv2.typing.MatLike
 
 
@@ -92,19 +92,20 @@ def find_rectangles(contours: Sequence[cv2.typing.MatLike], hierarchy):
 
     return [r1, r2]
 
-"""
-def fit_plane(points: tuple[list[int], list[]]) -> Plane3D:
-    mean = (np.mean(points[0]), np.mean(points[1]))
-    print("Mean")
-    print(mean)
-    print("Points")
-    # print(points)
+
+def fit_plane(points: list[cv2.typing.MatLike]) -> Plane3D:
+    # Compute mean of each coordinate
+    mean = np.mean(points, axis=0)
     y = points - mean
-    print(y)
-    cov_mat = sum([col @ col.transpose() for col in y])
-    print("Covariance matrix")
-    print(cov_mat)
-"""
+    cov_mat = sum([col @ col.T for col in y])
+
+    eigvals, eigvects = np.linalg.eig(cov_mat)
+    # Find index of minimum eigenvalue
+    normal_i = np.argmin(eigvals)
+    # Get associated eigenvector
+    normal = eigvects[normal_i]
+    # Shh I'm not setting rmat
+    return Plane3D(tvec=mean, rmat=np.zeros((3, 3)), normal=normal)
 
 
 def extract_base_planes(frame: cv2.typing.MatLike) -> tuple[Plane3D, Plane3D]:
@@ -151,8 +152,8 @@ def extract_base_planes(frame: cv2.typing.MatLike) -> tuple[Plane3D, Plane3D]:
     np.matrix
 
     return (
-            Plane3D(r1_tvec, r1_rvec, r1_normal),
-            Plane3D(r2_tvec, r2_rvec, r2_normal)
+            Plane3D(r1_tvec, r1_rmat, r1_normal),
+            Plane3D(r2_tvec, r2_rmat, r2_normal)
             )
 
 
@@ -174,7 +175,7 @@ def main():
         # Sanity check: reproject points back to the image
         r1_reprojection, _ = cv2.projectPoints(
             np.array(RECT, dtype=np.float32), 
-            r1.rvec,
+            r1.rmat,
             r1.tvec,
             K, 
             np.zeros((4, 1), dtype=np.float32)
@@ -182,7 +183,7 @@ def main():
 
         r2_reprojection, _ = cv2.projectPoints(
             np.array(RECT, dtype=np.float32), 
-            r2.rvec,
+            r2.rmat,
             r2.tvec,
             K, 
             np.zeros((4, 1), dtype=np.float32)
@@ -210,30 +211,63 @@ def main():
             # So I'm just limiting it to the inner square
             # (first 4 points, r1_reprojection[:4])
             if cv2.pointPolygonTest(r1_reprojection[:4], (px.item(), py.item()), False) == 1:
-                # Visual feedback: put some red points on the laser
-                # inside the rectangle
-                cv2.circle(frame, (px, py), 2, (0, 0, 255), -1)
+                # This used to be a check to see if the right points were
+                # detected. Now instead the same points are reprojected
+                # (see sanity check in lines below, after having found their
+                # 3d coordinates)
+                # cv2.circle(frame, (px, py), 2, (0, 0, 255), -1)
 
                 # Save points to be fitted in plane
                 laser_points_r1.append((px, py))
             elif cv2.pointPolygonTest(r2_reprojection[:4], (px.item(), py.item()), False) == 1:
                 # Same as above
-                cv2.circle(frame, (px, py), 2, (0, 0, 255), -1)
+                # cv2.circle(frame, (px, py), 2, (0, 0, 255), -1)
                 laser_points_r2.append((px, py))
             else:
                 # If the laser is not in the rectangles, color it with a
-                # darker red
+                # dark red
                 cv2.circle(frame, (px, py), 2, (0, 0, 160), -1)
 
-        rays_r1 = []
-        for p in laser_points_r1:
-            ray = Ray3D.backproject(p, K)
-            rays_r1.append(ray)
-
+        # 3D points of the laser intersected on plane r1
         points_r1 = []
-        for r in rays_r1:
-            p = intersect_plane_ray(r1, r)
-            # TODO for next time: check if p is found correctly
+        for p in laser_points_r1:
+            # Backproject laser points in a 3D ray
+            ray = Ray3D.backproject(p, K)
+            # Intersect the 3D ray with the plane found before
+            p = intersect_plane_ray(r1, ray)
+            points_r1.append(p)
+
+
+        # 3D points of the laser intersected on plane r2
+        points_r2 = []
+        for p in laser_points_r2:
+            ray = Ray3D.backproject(p, K)
+            p = intersect_plane_ray(r2, ray)
+            points_r2.append(p)
+
+        # Yes, this array could have been filled directly in the two for loops
+        # instead of filling two separate ones. But you never know, it might
+        # be useful to keep points separate
+        laser_points_3d = points_r1 + points_r2
+
+        # Sanity check: reproject and draw laser points on the image
+        # with a brighter red than points not intersecting
+        if len(laser_points_3d) != 0:
+            p_repr, _ = cv2.projectPoints(
+                np.array(laser_points_3d, dtype=np.float32),
+                # No need to translate or rotate the points
+                np.zeros(3, dtype=np.float32),
+                np.zeros(3, dtype=np.float32),
+                K,
+                False
+            )
+
+            for p in p_repr:
+                px, py = int(p[0][0]), int(p[0][1])
+                cv2.circle(frame, (px, py), 2, (0, 0, 255), -1)
+
+
+            laser_plane = fit_plane(laser_points_3d)
 
 
 
