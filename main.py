@@ -8,6 +8,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 import cv2
 import numpy as np
+import open3d as o3d
 
 INNER_RECT = [[0.01, 0.01, 0.],
               [0.01, 0.14, 0.],
@@ -41,7 +42,7 @@ class Ray3D:
     direction: cv2.typing.MatLike
 
     @classmethod
-    def backproject(cls, point2d: cv2.typing.MatLike, k: cv2.typing.MatLike) -> Ray3D:
+    def backproject(cls, point2d: cv2.typing.MatLike, k: cv2.typing.MatLike):
         point2d_homogeneous = np.append(point2d, 1).reshape(3, 1)
         p = np.zeros((3, 1))
         a = np.linalg.inv(k) @ point2d_homogeneous
@@ -103,7 +104,7 @@ def fit_plane(points: list[cv2.typing.MatLike]) -> Plane3D:
     # Find index of minimum eigenvalue
     normal_i = np.argmin(eigvals)
     # Get associated eigenvector
-    normal = eigvects[normal_i]
+    normal = eigvects[:, normal_i].reshape((3, 1))
     # Shh I'm not setting rmat
     return Plane3D(tvec=mean, rmat=np.zeros((3, 3)), normal=normal)
 
@@ -158,10 +159,20 @@ def extract_base_planes(frame: cv2.typing.MatLike) -> tuple[Plane3D, Plane3D]:
 
 
 def main():
-    cap = cv2.VideoCapture("./LaserScanner_project_data/data/puppet.mp4")
+    cap = cv2.VideoCapture("./LaserScanner_project_data/data/cup1.mp4")
     
+    # Open3D PointCloud
+    pcd = o3d.geometry.PointCloud()
+    pcd.points = o3d.utility.Vector3dVector(np.random.rand(10, 3))
 
-    while cap.isOpened():
+    # 3D visualizer
+    vis = o3d.visualization.Visualizer()
+    vis.create_window()
+    vis.add_geometry(pcd)
+
+    is_camera_resetted = False
+    keep_running = True
+    while cap.isOpened() and keep_running:
         ret, frame = cap.read()
         if not ret:
             return
@@ -197,7 +208,7 @@ def main():
         hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
         # Lost 30 minutes here because I didn't know OpenCV used
         # HSV with H in [0, 179] and not [0, 360]...
-        red_lower = np.array([160, 30, 128])
+        red_lower = np.array([165, 35, 80])
         red_upper = np.array([180, 255, 255])
         laser_mask = cv2.inRange(hsv, red_lower, red_upper)
         # This gives points (y, x) instead of (x, y)
@@ -205,6 +216,9 @@ def main():
 
         laser_points_r1 = []
         laser_points_r2 = []
+        # These are to be intersected with the laser plane
+        laser_points_out = []
+
         for px, py in zip(laser_x, laser_y):
             # I don't know what would happen if I used all 4 vertices
             # (both inner and outer rectangle) and I don't want to discover
@@ -227,6 +241,8 @@ def main():
                 # If the laser is not in the rectangles, color it with a
                 # dark red
                 cv2.circle(frame, (px, py), 2, (0, 0, 160), -1)
+
+                laser_points_out.append((px, py))
 
         # 3D points of the laser intersected on plane r1
         points_r1 = []
@@ -259,7 +275,7 @@ def main():
                 np.zeros(3, dtype=np.float32),
                 np.zeros(3, dtype=np.float32),
                 K,
-                False
+                None
             )
 
             for p in p_repr:
@@ -269,6 +285,22 @@ def main():
 
             laser_plane = fit_plane(laser_points_3d)
 
+            obj_points = []
+            for p in laser_points_out:
+                ray = Ray3D.backproject(p, K)
+                p3d = intersect_plane_ray(laser_plane, ray)
+                obj_points.append(p3d)
+            obj_points = np.array(obj_points).reshape(len(obj_points), 3)
+
+            pcd.points.extend(obj_points)
+
+            # Visualize new points
+            vis.update_geometry(pcd)
+            keep_running = vis.poll_events()
+            if not is_camera_resetted:
+                is_camera_resetted = True
+                vis.reset_view_point()
+            vis.update_renderer()
 
 
         cv2.imshow("frame", frame)
