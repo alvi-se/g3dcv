@@ -9,6 +9,8 @@ from dataclasses import dataclass
 import cv2
 import numpy as np
 import open3d as o3d
+import os
+import sys
 
 INNER_RECT = [[0.01, 0.01, 0.],
               [0.01, 0.14, 0.],
@@ -66,15 +68,15 @@ def sort_points(points):
     # Highest value is the bottom left vertex, lowest value is the top right
     d2 = sorted(points, key=lambda p: p[0] - p[1])
 
-    # "Clockwise" order of vertices
-    return np.array([d1[0], d2[0], d1[-1], d2[-1]])
+    # "Counter clockwise" order of vertices, where the first is the upper left
+    return np.array([d1[0], d2[0], d1[-1], d2[-1]]).reshape((4, 1, 2))
 
 
 def find_rectangles(contours: Sequence[cv2.typing.MatLike], hierarchy):
     rectangular_contours = []
 
     # for i, c in zip(np.arange(len(contours)), contours):
-    for c in contours:
+    for c, i in zip(contours, range(len(contours))):
         c1 = cv2.approxPolyDP(c, 15, True)
         # Keep only contours with 4 vertices
         if len(c1) == 4:
@@ -125,11 +127,18 @@ def extract_base_planes(frame: cv2.typing.MatLike) -> tuple[Plane3D, Plane3D]:
     rectangles = find_rectangles(contours, hierarchy)
 
 
-    # FIXME currently broken, don't know why
     # Green color for the first rectangle
-    # cv2.drawContours(frame, rectangles, -1, (0, 255, 0), 2)
+    cv2.drawContours(frame, [
+            rectangles[0][0:4].astype(np.int32),
+            rectangles[0][4:8].astype(np.int32),
+        ]
+        , -1, (0, 255, 0), 2)
     # Red color for the second rectangle
-    # cv2.drawContours(frame, rectangles[1], -1, (0, 0, 255), 2)
+    cv2.drawContours(frame, [
+            rectangles[1][0:4].astype(np.int32),
+            rectangles[1][4:8].astype(np.int32),
+        ]
+        , -1, (0, 0, 255), 2)
 
     r1_succ, r1_rvec, r1_tvec = cv2.solvePnP(
             np.array(RECT).astype(np.float32),
@@ -150,7 +159,6 @@ def extract_base_planes(frame: cv2.typing.MatLike) -> tuple[Plane3D, Plane3D]:
 
     r1_normal =  r1_rmat @ np.array([0, 0, 1])
     r2_normal =  r2_rmat @ np.array([0, 0, 1])
-    np.matrix
 
     return (
             Plane3D(r1_tvec, r1_rmat, r1_normal),
@@ -159,8 +167,14 @@ def extract_base_planes(frame: cv2.typing.MatLike) -> tuple[Plane3D, Plane3D]:
 
 
 def main():
-    cap = cv2.VideoCapture("./LaserScanner_project_data/data/cup1.mp4")
+    video_path = sys.argv[1]
+    cap = cv2.VideoCapture(video_path)
     
+    # Workaround to make Open3D work on Wayland
+    # Wayland is not supported apparently, so the idea is to force it
+    # to use X11, so that the window will be run on xWayland
+    os.environ["XDG_SESSION_TYPE"] = "x11"
+
     # Open3D PointCloud
     pcd = o3d.geometry.PointCloud()
     pcd.points = o3d.utility.Vector3dVector(np.random.rand(10, 3))
@@ -220,7 +234,7 @@ def main():
         laser_points_out = []
 
         for px, py in zip(laser_x, laser_y):
-            # I don't know what would happen if I used all 4 vertices
+            # I don't know what would happen if I used all 8 vertices
             # (both inner and outer rectangle) and I don't want to discover
             # So I'm just limiting it to the inner square
             # (first 4 points, r1_reprojection[:4])
@@ -237,12 +251,35 @@ def main():
                 # Same as above
                 # cv2.circle(frame, (px, py), 2, (0, 0, 255), -1)
                 laser_points_r2.append((px, py))
+
+            # 4----------7
+            # |  0----3  |
+            # |  |    |  |
+            # |  1----2  |
+            # 5----------6      <- }
+            #                      } Draw a polygon using these edges and
+            # 4----------7      <- } test if the point is inside
+            # |  0----3  |
+            # |  |    |  |
+            # |  1----2  |
+            # 5----------6
+            elif cv2.pointPolygonTest(np.concatenate(
+                [
+                    np.array([r1_reprojection[7], r1_reprojection[4]]),
+                    r2_reprojection[5:7],
+                ]),
+                (px.item(), py.item()),
+                False
+            ) == 1:
+                # light green
+                cv2.circle(frame, (px, py), 2, (0, 255, 0), -1)
+
+                laser_points_out.append((px, py))
             else:
                 # If the laser is not in the rectangles, color it with a
                 # dark red
                 cv2.circle(frame, (px, py), 2, (0, 0, 160), -1)
 
-                laser_points_out.append((px, py))
 
         # 3D points of the laser intersected on plane r1
         points_r1 = []
@@ -306,6 +343,16 @@ def main():
         cv2.imshow("frame", frame)
         if cv2.waitKey(1) & 0xFF == ord("q"):
             break
+
+    # I don't want it to write partial 3D objects
+    if keep_running:
+        ply_file = os.path.join(
+                os.path.dirname(video_path),
+                os.path.basename(video_path).split('.')[0] + '.ply'
+                )
+        print(f"Writing to file {ply_file}")
+        o3d.io.write_point_cloud(ply_file, pcd)
+
 
     cap.release()
     cv2.destroyAllWindows()
