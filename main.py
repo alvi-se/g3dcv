@@ -177,12 +177,10 @@ def main():
 
     # Open3D PointCloud
     pcd = o3d.geometry.PointCloud()
-    pcd.points = o3d.utility.Vector3dVector(np.random.rand(10, 3))
 
     # 3D visualizer
     vis = o3d.visualization.Visualizer()
     vis.create_window()
-    vis.add_geometry(pcd)
 
     is_camera_resetted = False
     keep_running = True
@@ -329,14 +327,27 @@ def main():
                 obj_points.append(p3d)
             obj_points = np.array(obj_points).reshape(len(obj_points), 3)
 
-            pcd.points.extend(obj_points)
+            # CV and CG use different coordinate system, so we transform
+            # OpenCV coordinates to OpenGL (used by Open3D)
+            T = np.eye(3)
+            T[1, 1] = -1  # Flip Y axis
+            T[2, 2] = -1  # Flip Z axis
+
+            obj_points = obj_points @ T
+
 
             # Visualize new points
-            vis.update_geometry(pcd)
-            keep_running = vis.poll_events()
             if not is_camera_resetted:
+                pcd.points = o3d.utility.Vector3dVector(obj_points)
+                vis.add_geometry(pcd)
                 is_camera_resetted = True
                 vis.reset_view_point()
+
+            else:
+                pcd.points.extend(obj_points)
+
+            vis.update_geometry(pcd)
+            keep_running = vis.poll_events()
             vis.update_renderer()
 
 
