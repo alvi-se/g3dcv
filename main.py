@@ -74,9 +74,9 @@ def sort_points(points):
 
 
 def find_rectangles(contours: Sequence[cv2.typing.MatLike], hierarchy):
+    filtered_contours = {}
     rectangular_contours = []
 
-    # for i, c in zip(np.arange(len(contours)), contours):
     for c, i in zip(contours, range(len(contours))):
         c1 = cv2.approxPolyDP(c, 15, True)
         # Keep only contours with 4 vertices
@@ -85,39 +85,36 @@ def find_rectangles(contours: Sequence[cv2.typing.MatLike], hierarchy):
             # solvePnP requires float32 so we convert it here,
             # to make code more readable in the next lines
             c1 = c1.astype(np.float32)
-            rectangular_contours.append(c1)
+            filtered_contours[i] = c1
 
-    # TODO: use hierarchy for more robust filtering and detection
-    # This is really bad because it assumes the position of the rectangles
-    # in the array. By using hierarchy it would be better: search
-    # for the rectangles that have another rectangle inside
-    r1 = np.concatenate([rectangular_contours[0], rectangular_contours[2]])
-    r2 = np.concatenate([rectangular_contours[1], rectangular_contours[3]])
+    for k, v in filtered_contours.items():
+        # Hierarchy is [next, prev, child, parent]
+        # So hierarchy[2] != -1 means "if contour has child contour"
+        if hierarchy[0, k, 2] != -1:
+            # First add the child contour (inner rectangle)
+            rectangular_contours.append(filtered_contours[hierarchy[0, k, 2]])
+            rectangular_contours.append(v)
+
+    r1 = np.concatenate([rectangular_contours[0], rectangular_contours[1]])
+    r2 = np.concatenate([rectangular_contours[2], rectangular_contours[3]])
 
     return [r1, r2]
 
 
-def fit_plane(points: list[cv2.typing.MatLike]) -> Plane3D:
-    # Compute mean of each coordinate
-    mean = np.mean(points, axis=0)
-    y = points - mean
-    cov_mat = sum([col @ col.T for col in y])
-
-    eigvals, eigvects = np.linalg.eig(cov_mat)
-    # Find index of minimum eigenvalue
-    normal_i = np.argmin(eigvals)
-    # Get associated eigenvector
-    normal = eigvects[:, normal_i].reshape((3, 1))
-    # Shh I'm not setting rmat
-    return Plane3D(tvec=mean, rmat=np.zeros((3, 3)), normal=normal)
-
 
 def extract_base_planes(frame: cv2.typing.MatLike) -> tuple[Plane3D, Plane3D, cv2.typing.MatLike, cv2.typing.MatLike]:
+    frame = cv2.bilateralFilter(frame, 9, 75, 75)
     grayscale = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
-    # Experimented a bit with the threshold and epsilon for approximation
-    _, thresholded = cv2.threshold(grayscale, 20, 255, cv2.THRESH_BINARY)
-    # thresholded = cv2.adaptiveThreshold(grayscale, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 51, 15)
+    # After experimenting also with adaptive thresholding, in the end the
+    # static one is the one that works best for this specific project:
+    # the rectangles are the elements with the lowest intensity in the image
+    # so we can put a very low threshold to detect only those.
+    # Using adaptive thresholding works best for all contours of the image,
+    # but it becomes more difficult to filter and find the rectangles
+    _, thresholded = cv2.threshold(grayscale, 20, 255, cv2.THRESH_BINARY_INV)
+    # _, thresholded = cv2.threshold(grayscale, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    # thresholded = cv2.adaptiveThreshold(grayscale, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 61, 4)
 
     # Find contours
     contours, hierarchy = cv2.findContours(
@@ -167,6 +164,22 @@ def extract_base_planes(frame: cv2.typing.MatLike) -> tuple[Plane3D, Plane3D, cv
             grayscale,
             thresholded
             )
+
+
+def fit_plane(points: list[cv2.typing.MatLike]) -> Plane3D:
+    # Compute mean of each coordinate
+    mean = np.mean(points, axis=0)
+    y = points - mean
+    cov_mat = sum([col @ col.T for col in y])
+
+    eigvals, eigvects = np.linalg.eig(cov_mat)
+    # Find index of minimum eigenvalue
+    normal_i = np.argmin(eigvals)
+    # Get associated eigenvector
+    normal = eigvects[:, normal_i].reshape((3, 1))
+    # Shh I'm not setting rmat
+    return Plane3D(tvec=mean, rmat=np.zeros((3, 3)), normal=normal)
+
 
 def add_label(img, text):
     """
@@ -237,6 +250,8 @@ def main():
         frame = cv2.undistort(frame, K, DIST)
         # Save for later visualization
         original_frame = frame.copy()
+
+        frame = cv2.bilateralFilter(frame, 15, 20, 20)
 
         r1, r2, grayscale, thresholded = extract_base_planes(frame)
         # try:
