@@ -6,6 +6,7 @@ Course: Geometric and 3D Computer Vision
 
 from collections.abc import Sequence
 from dataclasses import dataclass
+import logging
 import cv2
 import numpy as np
 import open3d as o3d
@@ -111,7 +112,7 @@ def fit_plane(points: list[cv2.typing.MatLike]) -> Plane3D:
     return Plane3D(tvec=mean, rmat=np.zeros((3, 3)), normal=normal)
 
 
-def extract_base_planes(frame: cv2.typing.MatLike) -> tuple[Plane3D, Plane3D]:
+def extract_base_planes(frame: cv2.typing.MatLike) -> tuple[Plane3D, Plane3D, cv2.typing.MatLike, cv2.typing.MatLike]:
     grayscale = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
     # Experimented a bit with the threshold and epsilon for approximation
@@ -162,8 +163,48 @@ def extract_base_planes(frame: cv2.typing.MatLike) -> tuple[Plane3D, Plane3D]:
 
     return (
             Plane3D(r1_tvec, r1_rmat, r1_normal),
-            Plane3D(r2_tvec, r2_rmat, r2_normal)
+            Plane3D(r2_tvec, r2_rmat, r2_normal),
+            grayscale,
+            thresholded
             )
+
+def add_label(img, text):
+    """
+    Only function in the project that is AI generated. It's just to
+    add a label under the images, for visualization purposes.
+    """
+    # If the image is 1-channel (Grayscale or Threshold), convert it to BGR
+    # Otherwise, it cannot be concatenated with color images
+    if len(img.shape) == 2:
+        img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+
+    # Add a constant black border only at the bottom (40 pixels high)
+    banner_height = 40
+    bordered_img = cv2.copyMakeBorder(
+        img,
+        top=0, bottom=banner_height, left=0, right=0,
+        borderType=cv2.BORDER_CONSTANT,
+        value=[0, 0, 0] # Black
+    )
+
+    # Calculate text position inside the black banner
+    # (X=15 pixels from left, Y=total height minus 12 pixels from bottom)
+    text_position = (15, bordered_img.shape[0] - 12)
+
+    # Render the text
+    cv2.putText(
+        bordered_img,
+        text,
+        text_position,
+        fontFace=cv2.FONT_HERSHEY_SIMPLEX,
+        fontScale=0.6,
+        color=(255, 255, 255), # White
+        thickness=1,
+        lineType=cv2.LINE_AA # Antialiasing for crisp text rendering
+    )
+
+    return bordered_img
+
 
 
 def main():
@@ -182,6 +223,9 @@ def main():
     vis = o3d.visualization.Visualizer()
     vis.create_window()
 
+    window_name = "Laser Scanner - Realtime Monitor"
+    cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+
     is_camera_resetted = False
     keep_running = True
     while cap.isOpened() and keep_running:
@@ -191,8 +235,16 @@ def main():
 
         # Compensate camera distortion
         frame = cv2.undistort(frame, K, DIST)
+        # Save for later visualization
+        original_frame = frame.copy()
 
-        r1, r2 = extract_base_planes(frame)
+        r1, r2, grayscale, thresholded = extract_base_planes(frame)
+        # try:
+        #     r1, r2, grayscale, thresholded = extract_base_planes(frame)
+        # except:
+        #     logging.warning("Failed to detect rectangles, frame skipped")
+        #     continue
+
 
 
         # Sanity check: reproject points back to the image
@@ -231,6 +283,25 @@ def main():
         # These are to be intersected with the laser plane
         laser_points_out = []
 
+
+        # 4----------7
+        # |  0----3  |
+        # |  |    |  |
+        # |  1----2  |
+        # 5----------6      <- }
+        #                      } Draw a polygon using these edges and
+        # 4----------7      <- } test if the point is inside
+        # |  0----3  |
+        # |  |    |  |
+        # |  1----2  |
+        # 5----------6
+        detection_area = np.concatenate([
+            np.array([r1_reprojection[7], r1_reprojection[4]]),
+            r2_reprojection[5:7],
+        ])
+
+        frame = cv2.drawContours(frame, [detection_area.astype(np.int32)], -1, (255, 255, 255), 2)
+
         for px, py in zip(laser_x, laser_y):
             # I don't know what would happen if I used all 8 vertices
             # (both inner and outer rectangle) and I don't want to discover
@@ -250,25 +321,7 @@ def main():
                 # cv2.circle(frame, (px, py), 2, (0, 0, 255), -1)
                 laser_points_r2.append((px, py))
 
-            # 4----------7
-            # |  0----3  |
-            # |  |    |  |
-            # |  1----2  |
-            # 5----------6      <- }
-            #                      } Draw a polygon using these edges and
-            # 4----------7      <- } test if the point is inside
-            # |  0----3  |
-            # |  |    |  |
-            # |  1----2  |
-            # 5----------6
-            elif cv2.pointPolygonTest(np.concatenate(
-                [
-                    np.array([r1_reprojection[7], r1_reprojection[4]]),
-                    r2_reprojection[5:7],
-                ]),
-                (px.item(), py.item()),
-                False
-            ) == 1:
+            elif cv2.pointPolygonTest(detection_area, (px.item(), py.item()), False) == 1:
                 # light green
                 cv2.circle(frame, (px, py), 2, (0, 255, 0), -1)
 
@@ -351,9 +404,20 @@ def main():
             vis.update_renderer()
 
 
-        cv2.imshow("frame", frame)
+        # Put labels to each image
+        lbl_original = add_label(original_frame, "1. Original Input (Undistorted)")
+        lbl_features = add_label(frame, "2. Detected features")
+        lbl_gray     = add_label(grayscale, "3. Grayscale")
+        lbl_thresh   = add_label(thresholded, "4. Binary Threshold")
+
+        upper_row = np.hstack((lbl_original, lbl_features))
+        lower_row = np.hstack((lbl_gray, lbl_thresh))
+
+        grid = np.vstack((upper_row, lower_row))
+
+        cv2.imshow("Laser Scanner - Realtime Monitor", grid)
         if cv2.waitKey(1) & 0xFF == ord("q"):
-            break
+            keep_running = False
 
     # I don't want it to write partial 3D objects
     if keep_running:
