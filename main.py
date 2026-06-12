@@ -102,20 +102,7 @@ def find_rectangles(contours: Sequence[cv2.typing.MatLike], hierarchy):
 
 
 
-def extract_base_planes(frame: cv2.typing.MatLike) -> tuple[Plane3D, Plane3D, cv2.typing.MatLike, cv2.typing.MatLike]:
-    frame = cv2.bilateralFilter(frame, 9, 75, 75)
-    grayscale = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-
-    # After experimenting also with adaptive thresholding, in the end the
-    # static one is the one that works best for this specific project:
-    # the rectangles are the elements with the lowest intensity in the image
-    # so we can put a very low threshold to detect only those.
-    # Using adaptive thresholding works best for all contours of the image,
-    # but it becomes more difficult to filter and find the rectangles
-    _, thresholded = cv2.threshold(grayscale, 20, 255, cv2.THRESH_BINARY_INV)
-    # _, thresholded = cv2.threshold(grayscale, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-    # thresholded = cv2.adaptiveThreshold(grayscale, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 61, 4)
-
+def extract_base_planes(frame: cv2.typing.MatLike, thresholded: cv2.typing.MatLike) -> tuple[Plane3D, Plane3D]:
     # Find contours
     contours, hierarchy = cv2.findContours(
         # thresholded, cv2.CHAIN_APPROX_SIMPLE, cv2.RETR_CCOMP
@@ -161,8 +148,6 @@ def extract_base_planes(frame: cv2.typing.MatLike) -> tuple[Plane3D, Plane3D, cv
     return (
             Plane3D(r1_tvec, r1_rmat, r1_normal),
             Plane3D(r2_tvec, r2_rmat, r2_normal),
-            grayscale,
-            thresholded
             )
 
 
@@ -251,14 +236,25 @@ def main():
         # Save for later visualization
         original_frame = frame.copy()
 
+        grayscale = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         frame = cv2.bilateralFilter(frame, 15, 20, 20)
+        # grayscale = cv2.bilateralFilter(grayscale, 15, 20, 20)
 
-        r1, r2, grayscale, thresholded = extract_base_planes(frame)
-        # try:
-        #     r1, r2, grayscale, thresholded = extract_base_planes(frame)
-        # except:
-        #     logging.warning("Failed to detect rectangles, frame skipped")
-        #     continue
+        # After experimenting also with adaptive thresholding, in the end the
+        # static one is the one that works best for this specific project:
+        # the rectangles are the elements with the lowest intensity in the image
+        # so we can put a very low threshold to detect only those.
+        # Using adaptive thresholding works best for all contours of the image,
+        # but it becomes more difficult to filter and find the rectangles
+        _, thresholded = cv2.threshold(grayscale, 20, 255, cv2.THRESH_BINARY_INV)
+        # _, thresholded = cv2.threshold(grayscale, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        # thresholded = cv2.adaptiveThreshold(grayscale, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 61, 4)
+
+        try:
+            r1, r2 = extract_base_planes(frame, thresholded)
+        except:
+            logging.warning("Failed to detect rectangles, frame skipped")
+            continue
 
 
 
@@ -287,8 +283,8 @@ def main():
         hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
         # Lost 30 minutes here because I didn't know OpenCV used
         # HSV with H in [0, 179] and not [0, 360]...
-        red_lower = np.array([165, 35, 80])
-        red_upper = np.array([180, 255, 255])
+        red_lower = np.array([160, 35, 70])
+        red_upper = np.array([182, 255, 255])
         laser_mask = cv2.inRange(hsv, red_lower, red_upper)
         # This gives points (y, x) instead of (x, y)
         laser_y, laser_x = np.where(laser_mask > 0)
@@ -315,6 +311,7 @@ def main():
             r2_reprojection[5:7],
         ])
 
+        # Draw the area
         frame = cv2.drawContours(frame, [detection_area.astype(np.int32)], -1, (255, 255, 255), 2)
 
         for px, py in zip(laser_x, laser_y):
@@ -385,7 +382,7 @@ def main():
                 px, py = int(p[0][0]), int(p[0][1])
                 cv2.circle(frame, (px, py), 2, (0, 0, 255), -1)
 
-
+            # Fit the laser points into a 3D plane
             laser_plane = fit_plane(laser_points_3d)
 
             obj_points = []
@@ -440,7 +437,7 @@ def main():
                 os.path.dirname(video_path),
                 os.path.basename(video_path).split('.')[0] + '.ply'
                 )
-        print(f"Writing to file {ply_file}")
+        logging.info(f"Writing to file {ply_file}")
         o3d.io.write_point_cloud(ply_file, pcd)
 
 
