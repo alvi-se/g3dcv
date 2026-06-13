@@ -35,6 +35,13 @@ RECT = INNER_RECT + OUTER_RECT
 # K = np.loadtxt("./LaserScanner_project_data/calibration/K.txt")
 # DIST = np.loadtxt("./LaserScanner_project_data/calibration/dist.txt")
 
+
+if len(sys.argv) != 4:
+    print("Usage: python3 main.py [K.txt] [DIST.txt] [video]")
+    exit(1)
+
+
+
 K = np.loadtxt(sys.argv[1])
 DIST = np.loadtxt(sys.argv[2])
 
