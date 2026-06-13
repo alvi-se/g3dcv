@@ -1,5 +1,6 @@
 # Geometric and 3D Computer Vision project
 Author: Alvise Favero (888851@stud.unive.it)
+
 Academic Year: 2025/2026
 
 ## Running
