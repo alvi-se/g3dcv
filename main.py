@@ -250,9 +250,6 @@ def main():
             break
         frames += 1
 
-        width = len(frame[0])
-        height = len(frame)
-
         # Compensate camera distortion
         frame = cv2.undistort(frame, K, DIST)
         # Save for later visualization
@@ -260,7 +257,7 @@ def main():
 
         # This would be the best one, but it destroys performance
         # frame = cv2.bilateralFilter(frame, 15, 20, 20)
-        frame = cv2.GaussianBlur(frame, (9, 9), 2)
+        frame = cv2.GaussianBlur(frame, (3, 3), 2)
 
         grayscale = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         # grayscale = cv2.bilateralFilter(grayscale, 15, 20, 20)
@@ -309,8 +306,9 @@ def main():
         hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
         # Lost 30 minutes here because I didn't know OpenCV used
         # HSV with H in [0, 179] and not [0, 360]...
-        red_lower = np.array([150, 35, 70])
+        red_lower = np.array([150, 26, 80])
         red_upper = np.array([182, 255, 255])
+
         laser_mask = cv2.inRange(hsv, red_lower, red_upper)
         # This gives points (y, x) instead of (x, y)
         laser_y, laser_x = np.where(laser_mask > 0)
@@ -318,7 +316,7 @@ def main():
         laser_points_r1 = []
         laser_points_r2 = []
         # These are to be intersected with the laser plane
-        laser_points_out = []
+        laser_points_roi = []
 
 
         # 4----------7
@@ -363,7 +361,7 @@ def main():
                 # light green
                 cv2.circle(frame, (px, py), 2, (0, 255, 0), -1)
 
-                laser_points_out.append([px, py])
+                laser_points_roi.append([px, py])
             else:
                 # If the laser is not in the rectangles, color it with a
                 # dark red
@@ -427,10 +425,10 @@ def main():
             laser_plane = fit_plane(laser_points_3d)
 
             obj_points = []
-            laser_points_out = np.array(laser_points_out).T
+            laser_points_roi = np.array(laser_points_roi).T
 
-            if len(laser_points_out) > 0:
-                rays = Ray3D.backproject(laser_points_out, K)
+            if len(laser_points_roi) > 0:
+                rays = Ray3D.backproject(laser_points_roi, K)
                 obj_points = intersect_plane_ray(laser_plane, rays)
             else:
                 obj_points = np.array([[], [], []])
