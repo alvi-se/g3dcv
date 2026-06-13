@@ -49,14 +49,21 @@ class Ray3D:
     direction: cv2.typing.MatLike
 
     @classmethod
-    def backproject(cls, point2d: cv2.typing.MatLike, k: cv2.typing.MatLike):
-        point2d_homogeneous = np.append(point2d, 1).reshape(3, 1)
-        p = np.zeros((3, 1))
-        a = np.linalg.inv(k) @ point2d_homogeneous
-        direction = a / np.linalg.norm(a)
+    def backproject(cls, points2d: cv2.typing.MatLike, k: cv2.typing.MatLike):
+        n = points2d.shape[1]
 
-        return Ray3D(p, direction)
+        ones = np.ones((1, n), dtype=points2d.dtype)
+        points2d_homogeneous = np.vstack([points2d, ones])
 
+        k_inv = np.linalg.inv(k)
+        a = k_inv @ points2d_homogeneous
+
+        norms = np.linalg.norm(a, axis=0, keepdims=True)
+        direction = a / norms
+
+        p = np.zeros((3, n), dtype=points2d.dtype)
+
+        return cls(p, direction)
 
 def intersect_plane_ray(plane: Plane3D, ray: Ray3D) -> cv2.typing.MatLike:
     z = ((plane.tvec - ray.point).T @ plane.normal) / (ray.direction.T @ plane.normal)
@@ -156,18 +163,18 @@ def extract_base_planes(frame: cv2.typing.MatLike, thresholded: cv2.typing.MatLi
             )
 
 
-def fit_plane(points: list[cv2.typing.MatLike]) -> Plane3D:
+def fit_plane(points: cv2.typing.MatLike) -> Plane3D:
     # Compute mean of each coordinate
-    mean = np.mean(points, axis=0)
+    mean = np.mean(points, axis=1).reshape(3, 1)
     y = points - mean
-    cov_mat = sum([col @ col.T for col in y])
+    cov_mat = y @ y.T
 
     # Optimize with eigh: https://stackoverflow.com/questions/45434989/numpy-difference-between-linalg-eig-and-linalg-eigh
     eigvals, eigvects = np.linalg.eigh(cov_mat)
     # Find index of minimum eigenvalue
     normal_i = np.argmin(eigvals)
     # Get associated eigenvector
-    normal = eigvects[:, normal_i].reshape((3, 1))
+    normal = eigvects[:, normal_i]
     # Shh I'm not setting rmat
     return Plane3D(tvec=mean, rmat=np.zeros((3, 3)), normal=normal)
 
@@ -302,7 +309,7 @@ def main():
         hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
         # Lost 30 minutes here because I didn't know OpenCV used
         # HSV with H in [0, 179] and not [0, 360]...
-        red_lower = np.array([160, 35, 70])
+        red_lower = np.array([150, 35, 70])
         red_upper = np.array([182, 255, 255])
         laser_mask = cv2.inRange(hsv, red_lower, red_upper)
         # This gives points (y, x) instead of (x, y)
@@ -346,17 +353,17 @@ def main():
                 # cv2.circle(frame, (px, py), 2, (0, 0, 255), -1)
 
                 # Save points to be fitted in plane
-                laser_points_r1.append((px, py))
+                laser_points_r1.append([px, py])
             elif cv2.pointPolygonTest(r2_reprojection[:4], (px.item(), py.item()), False) == 1:
                 # Same as above
                 # cv2.circle(frame, (px, py), 2, (0, 0, 255), -1)
-                laser_points_r2.append((px, py))
+                laser_points_r2.append([px, py])
 
             elif cv2.pointPolygonTest(detection_area, (px.item(), py.item()), False) == 1:
                 # light green
                 cv2.circle(frame, (px, py), 2, (0, 255, 0), -1)
 
-                laser_points_out.append((px, py))
+                laser_points_out.append([px, py])
             else:
                 # If the laser is not in the rectangles, color it with a
                 # dark red
@@ -364,30 +371,45 @@ def main():
 
 
         # 3D points of the laser intersected on plane r1
-        points_r1 = []
+        laser_points_r1 = np.array(laser_points_r1).T
+        if len(laser_points_r1) > 0:
+            rays = Ray3D.backproject(laser_points_r1, K)
+            points_r1 = intersect_plane_ray(r1, rays)
+        else:
+            points_r1 = np.array([[], [], []])
+        """
         for p in laser_points_r1:
             # Backproject laser points in a 3D ray
             ray = Ray3D.backproject(p, K)
             # Intersect the 3D ray with the plane found before
             p = intersect_plane_ray(r1, ray)
             points_r1.append(p)
+        """
 
+        laser_points_r2 = np.array(laser_points_r2).T
+        if len(laser_points_r2) > 0:
+            rays = Ray3D.backproject(laser_points_r2, K)
+            points_r2 = intersect_plane_ray(r2, rays)
+        else:
+            points_r2 = np.array([[], [], []])
 
+        """
         # 3D points of the laser intersected on plane r2
         points_r2 = []
         for p in laser_points_r2:
             ray = Ray3D.backproject(p, K)
             p = intersect_plane_ray(r2, ray)
             points_r2.append(p)
+        """
 
         # Yes, this array could have been filled directly in the two for loops
         # instead of filling two separate ones. But you never know, it might
         # be useful to keep points separate
-        laser_points_3d = points_r1 + points_r2
+        laser_points_3d = np.hstack((points_r1, points_r2))
 
         # Sanity check: reproject and draw laser points on the image
         # with a brighter red than points not intersecting
-        if len(laser_points_3d) != 0:
+        if laser_points_3d.shape[1] != 0:
             p_repr, _ = cv2.projectPoints(
                 np.array(laser_points_3d, dtype=np.float32),
                 # No need to translate or rotate the points
@@ -405,11 +427,13 @@ def main():
             laser_plane = fit_plane(laser_points_3d)
 
             obj_points = []
-            for p in laser_points_out:
-                ray = Ray3D.backproject(p, K)
-                p3d = intersect_plane_ray(laser_plane, ray)
-                obj_points.append(p3d)
-            obj_points = np.array(obj_points).reshape(len(obj_points), 3)
+            laser_points_out = np.array(laser_points_out).T
+
+            if len(laser_points_out) > 0:
+                rays = Ray3D.backproject(laser_points_out, K)
+                obj_points = intersect_plane_ray(laser_plane, rays)
+            else:
+                obj_points = np.array([[], [], []])
 
             # CV and CG use different coordinate system, so we transform
             # OpenCV coordinates to OpenGL (used by Open3D)
@@ -417,18 +441,19 @@ def main():
             T[1, 1] = -1  # Flip Y axis
             T[2, 2] = -1  # Flip Z axis
 
-            obj_points = obj_points @ T
+            # obj_points = obj_points @ T
+            obj_points = T @ obj_points
 
 
             # Reset camera on the first extracted points
             if not is_camera_resetted:
-                pcd.points = o3d.utility.Vector3dVector(obj_points)
+                pcd.points = o3d.utility.Vector3dVector(obj_points.T)
                 vis.add_geometry(pcd)
                 is_camera_resetted = True
                 vis.reset_view_point()
 
             else:
-                pcd.points.extend(obj_points)
+                pcd.points.extend(obj_points.T)
 
             # Visualize new points in the Open3D visualizer
             vis.update_geometry(pcd)
