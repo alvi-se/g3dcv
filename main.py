@@ -45,6 +45,11 @@ class Plane3D:
 
 @dataclass
 class Ray3D:
+    """
+    At the beginning of the project, this class used to represent a single ray.
+    Then I realized that it could fit many rays simply by using matrices
+    instead of vectors for point and direction.
+    """
     point: cv2.typing.MatLike
     direction: cv2.typing.MatLike
 
@@ -64,6 +69,7 @@ class Ray3D:
         p = np.zeros((3, n), dtype=points2d.dtype)
 
         return cls(p, direction)
+
 
 def intersect_plane_ray(plane: Plane3D, ray: Ray3D) -> cv2.typing.MatLike:
     z = ((plane.tvec - ray.point).T @ plane.normal) / (ray.direction.T @ plane.normal)
@@ -239,10 +245,13 @@ def main():
     window_name = "Laser Scanner - Realtime Monitor"
     cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
 
+    # To count elaborated frames
     frames = 0
     skipped_frames = 0
 
+    # The program will reset the camera as soon as it receives the first points
     is_camera_resetted = False
+    # To stop running the program by pressing q in the visualization window
     keep_running = True
     while cap.isOpened() and keep_running:
         ret, frame = cap.read()
@@ -257,6 +266,7 @@ def main():
 
         # This would be the best one, but it destroys performance
         # frame = cv2.bilateralFilter(frame, 15, 20, 20)
+        # Good compromise for performance
         frame = cv2.GaussianBlur(frame, (3, 3), 2)
 
         grayscale = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
@@ -330,13 +340,13 @@ def main():
         # |  |    |  |
         # |  1----2  |
         # 5----------6
-        detection_area = np.concatenate([
+        roi_area = np.concatenate([
             np.array([r1_reprojection[7], r1_reprojection[4]]),
             r2_reprojection[5:7],
         ])
 
         # Draw the area
-        frame = cv2.drawContours(frame, [detection_area.astype(np.int32)], -1, (255, 255, 255), 2)
+        frame = cv2.drawContours(frame, [roi_area.astype(np.int32)], -1, (255, 255, 255), 2)
 
         for px, py in zip(laser_x, laser_y):
             # I don't know what would happen if I used all 8 vertices
@@ -357,18 +367,20 @@ def main():
                 # cv2.circle(frame, (px, py), 2, (0, 0, 255), -1)
                 laser_points_r2.append([px, py])
 
-            elif cv2.pointPolygonTest(detection_area, (px.item(), py.item()), False) == 1:
-                # light green
+            elif cv2.pointPolygonTest(roi_area, (px.item(), py.item()), False) == 1:
+                # light green, for points in the ROI
                 cv2.circle(frame, (px, py), 2, (0, 255, 0), -1)
 
                 laser_points_roi.append([px, py])
             else:
-                # If the laser is not in the rectangles, color it with a
-                # dark red
+                # If the laser is not in the rectangles nor in the ROI,
+                # color it with a dark red
                 cv2.circle(frame, (px, py), 2, (0, 0, 160), -1)
 
 
         # 3D points of the laser intersected on plane r1
+        # Instead of an array of points (nx3) we want a matrix of points (3xn),
+        # so we transpose it
         laser_points_r1 = np.array(laser_points_r1).T
         if len(laser_points_r1) > 0:
             rays = Ray3D.backproject(laser_points_r1, K)
@@ -400,9 +412,7 @@ def main():
             points_r2.append(p)
         """
 
-        # Yes, this array could have been filled directly in the two for loops
-        # instead of filling two separate ones. But you never know, it might
-        # be useful to keep points separate
+        # Combine 3D laser points found in planes, for later fitting
         laser_points_3d = np.hstack((points_r1, points_r2))
 
         # Sanity check: reproject and draw laser points on the image
@@ -421,9 +431,12 @@ def main():
                 px, py = int(p[0][0]), int(p[0][1])
                 cv2.circle(frame, (px, py), 2, (0, 0, 255), -1)
 
+
             # Fit the laser points into a 3D plane
             laser_plane = fit_plane(laser_points_3d)
 
+            # Same operation as above, when intersecting the laser points
+            # with the two rectangles
             obj_points = []
             laser_points_roi = np.array(laser_points_roi).T
 
@@ -439,18 +452,18 @@ def main():
             T[1, 1] = -1  # Flip Y axis
             T[2, 2] = -1  # Flip Z axis
 
-            # obj_points = obj_points @ T
             obj_points = T @ obj_points
-
 
             # Reset camera on the first extracted points
             if not is_camera_resetted:
+                # Add points for the first time
                 pcd.points = o3d.utility.Vector3dVector(obj_points.T)
                 vis.add_geometry(pcd)
                 is_camera_resetted = True
                 vis.reset_view_point()
 
             else:
+                # Add newly found points
                 pcd.points.extend(obj_points.T)
 
             # Visualize new points in the Open3D visualizer
@@ -458,6 +471,8 @@ def main():
             keep_running = vis.poll_events()
             vis.update_renderer()
 
+        # Here we want to visualize the images used for processing,
+        # for debug purposes
 
         # Put labels to each image
         lbl_original = add_label(original_frame, "1. Original Input (Undistorted)")
@@ -468,6 +483,7 @@ def main():
         upper_row = np.hstack((lbl_original, lbl_features))
         lower_row = np.hstack((lbl_gray, lbl_thresh))
 
+        # Put images on a grid
         grid = np.vstack((upper_row, lower_row))
 
         cv2.imshow("Laser Scanner - Realtime Monitor", grid)
@@ -486,6 +502,7 @@ def main():
 
     # I don't want it to write partial 3D objects
     if keep_running:
+        # Put ply file in same folder with same name of input video
         ply_file = os.path.join(
                 os.path.dirname(video_path),
                 os.path.basename(video_path).split('.')[0] + '.ply'
