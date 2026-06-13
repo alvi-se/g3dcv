@@ -7,11 +7,15 @@ Course: Geometric and 3D Computer Vision
 from collections.abc import Sequence
 from dataclasses import dataclass
 import logging
+import time
 import cv2
 import numpy as np
 import open3d as o3d
 import os
 import sys
+
+logging.basicConfig(level=logging.INFO)
+
 
 INNER_RECT = [[0.01, 0.01, 0.],
               [0.01, 0.14, 0.],
@@ -73,7 +77,7 @@ def sort_points(points):
     return np.array([d1[0], d2[0], d1[-1], d2[-1]]).reshape((4, 1, 2))
 
 
-def find_rectangles(contours: Sequence[cv2.typing.MatLike], hierarchy):
+def find_rectangles(contours: Sequence[cv2.typing.MatLike], hierarchy) -> tuple[cv2.typing.MatLike]:
     filtered_contours = {}
     rectangular_contours = []
 
@@ -98,11 +102,11 @@ def find_rectangles(contours: Sequence[cv2.typing.MatLike], hierarchy):
     r1 = np.concatenate([rectangular_contours[0], rectangular_contours[1]])
     r2 = np.concatenate([rectangular_contours[2], rectangular_contours[3]])
 
-    return [r1, r2]
+    return (r1, r2)
 
 
 
-def extract_base_planes(frame: cv2.typing.MatLike, thresholded: cv2.typing.MatLike) -> tuple[Plane3D, Plane3D]:
+def extract_base_planes(frame: cv2.typing.MatLike, thresholded: cv2.typing.MatLike) -> tuple[Plane3D, Plane3D, cv2.typing.MatLike, cv2.typing.MatLike]:
     # Find contours
     contours, hierarchy = cv2.findContours(
         # thresholded, cv2.CHAIN_APPROX_SIMPLE, cv2.RETR_CCOMP
@@ -148,6 +152,7 @@ def extract_base_planes(frame: cv2.typing.MatLike, thresholded: cv2.typing.MatLi
     return (
             Plane3D(r1_tvec, r1_rmat, r1_normal),
             Plane3D(r2_tvec, r2_rmat, r2_normal),
+            *rectangles
             )
 
 
@@ -157,7 +162,8 @@ def fit_plane(points: list[cv2.typing.MatLike]) -> Plane3D:
     y = points - mean
     cov_mat = sum([col @ col.T for col in y])
 
-    eigvals, eigvects = np.linalg.eig(cov_mat)
+    # Optimize with eigh: https://stackoverflow.com/questions/45434989/numpy-difference-between-linalg-eig-and-linalg-eigh
+    eigvals, eigvects = np.linalg.eigh(cov_mat)
     # Find index of minimum eigenvalue
     normal_i = np.argmin(eigvals)
     # Get associated eigenvector
@@ -206,6 +212,8 @@ def add_label(img, text):
 
 
 def main():
+    start_time = time.time()
+
     video_path = sys.argv[1]
     cap = cv2.VideoCapture(video_path)
     
@@ -224,20 +232,30 @@ def main():
     window_name = "Laser Scanner - Realtime Monitor"
     cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
 
+    frames = 0
+    skipped_frames = 0
+
     is_camera_resetted = False
     keep_running = True
     while cap.isOpened() and keep_running:
         ret, frame = cap.read()
         if not ret:
-            return
+            break
+        frames += 1
+
+        width = len(frame[0])
+        height = len(frame)
 
         # Compensate camera distortion
         frame = cv2.undistort(frame, K, DIST)
         # Save for later visualization
         original_frame = frame.copy()
 
+        # This would be the best one, but it destroys performance
+        # frame = cv2.bilateralFilter(frame, 15, 20, 20)
+        frame = cv2.GaussianBlur(frame, (9, 9), 2)
+
         grayscale = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        frame = cv2.bilateralFilter(frame, 15, 20, 20)
         # grayscale = cv2.bilateralFilter(grayscale, 15, 20, 20)
 
         # After experimenting also with adaptive thresholding, in the end the
@@ -251,9 +269,10 @@ def main():
         # thresholded = cv2.adaptiveThreshold(grayscale, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 61, 4)
 
         try:
-            r1, r2 = extract_base_planes(frame, thresholded)
+            r1, r2, contours_r1, contours_r2 = extract_base_planes(frame, thresholded)
         except:
-            logging.warning("Failed to detect rectangles, frame skipped")
+            skipped_frames += 1
+            logging.warning(f"Failed to detect rectangles, frame skipped. Currently skipped: {skipped_frames}")
             continue
 
 
@@ -401,7 +420,7 @@ def main():
             obj_points = obj_points @ T
 
 
-            # Visualize new points
+            # Reset camera on the first extracted points
             if not is_camera_resetted:
                 pcd.points = o3d.utility.Vector3dVector(obj_points)
                 vis.add_geometry(pcd)
@@ -411,6 +430,7 @@ def main():
             else:
                 pcd.points.extend(obj_points)
 
+            # Visualize new points in the Open3D visualizer
             vis.update_geometry(pcd)
             keep_running = vis.poll_events()
             vis.update_renderer()
@@ -431,6 +451,16 @@ def main():
         if cv2.waitKey(1) & 0xFF == ord("q"):
             keep_running = False
 
+    # Computation time
+    end_time = time.time()
+    computation_time = end_time - start_time
+
+    # Video duration in seconds
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    seconds = round(frames / fps)
+
+    logging.info(f"Took {computation_time} seconds, video duration until now is {seconds}. Extraction takes {computation_time / seconds}x time")
+
     # I don't want it to write partial 3D objects
     if keep_running:
         ply_file = os.path.join(
@@ -439,6 +469,8 @@ def main():
                 )
         logging.info(f"Writing to file {ply_file}")
         o3d.io.write_point_cloud(ply_file, pcd)
+    else:
+        logging.info("Not writing file due to interruption")
 
 
     cap.release()
