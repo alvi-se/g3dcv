@@ -5,7 +5,7 @@ Academic Year: 2025/2026
 
 ## Running
 The project requires Python 3.12 because Open3D doesn't support newer versions.
-I recommend using uv to change Python version easily.
+I recommend using [uv](https://docs.astral.sh/uv/) to change Python version easily.
 
 Running with uv:
 ```sh
