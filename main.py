@@ -32,8 +32,11 @@ OUTER_RECT = [[0., 0., 0.],
 RECT = INNER_RECT + OUTER_RECT
 
 
-K = np.loadtxt("./LaserScanner_project_data/calibration/K.txt")
-DIST = np.loadtxt("./LaserScanner_project_data/calibration/dist.txt")
+# K = np.loadtxt("./LaserScanner_project_data/calibration/K.txt")
+# DIST = np.loadtxt("./LaserScanner_project_data/calibration/dist.txt")
+
+K = np.loadtxt(sys.argv[1])
+DIST = np.loadtxt(sys.argv[2])
 
 
 @dataclass
@@ -227,7 +230,7 @@ def add_label(img, text):
 def main():
     start_time = time.time()
 
-    video_path = sys.argv[1]
+    video_path = sys.argv[3]
     cap = cv2.VideoCapture(video_path)
     
     # Workaround to make Open3D work on Wayland
